@@ -1,5 +1,8 @@
 param(
-    [string]$ProcessName = "TIDAL"
+    [string]$ProcessName = "TIDAL",
+    [string]$CurrentTitle = "",
+    [string]$CurrentArtist = "",
+    [string]$CurrentAlbum = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,6 +16,103 @@ Add-Type -AssemblyName System.Drawing
 function Normalize-Text {
     param([string]$Value)
     return ([string]$Value).Trim().ToLowerInvariant()
+}
+
+function Has-Text {
+    param([string]$Value)
+    return -not [string]::IsNullOrWhiteSpace(([string]$Value))
+}
+
+function Is-NoiseText {
+    param([string]$Value)
+
+    $text = ([string]$Value).Trim()
+    if (-not $text) {
+        return $true
+    }
+
+    if ($text -eq "Play" -or $text -eq "Mix" -or $text -eq "Tracks" -or $text -eq "Show options") {
+        return $true
+    }
+
+    if ($text -match "^\d+:\d{2}$") {
+        return $true
+    }
+
+    if ($text -match "^\d+\s+Play$") {
+        return $true
+    }
+
+    return $false
+}
+
+function Test-TextMatch {
+    param(
+        [string]$Left,
+        [string]$Right
+    )
+
+    $leftText = Normalize-Text $Left
+    $rightText = Normalize-Text $Right
+
+    if (-not $leftText -or -not $rightText) {
+        return $false
+    }
+
+    return $leftText -eq $rightText -or $leftText.Contains($rightText) -or $rightText.Contains($leftText)
+}
+
+function Join-UniqueText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Nodes,
+        [double]$MinLeft,
+        [double]$MaxLeft
+    )
+
+    $values = $Nodes |
+        Where-Object {
+            $_.Name -and
+            $_.Left -ge $MinLeft -and
+            $_.Left -lt $MaxLeft -and
+            -not (Is-NoiseText $_.Name)
+        } |
+        Sort-Object Left, Index |
+        ForEach-Object { $_.Name }
+
+    $unique = New-Object System.Collections.Generic.List[string]
+    foreach ($value in $values) {
+        if (-not ($unique | Where-Object { (Normalize-Text $_) -eq (Normalize-Text $value) } | Select-Object -First 1)) {
+            $unique.Add($value)
+        }
+    }
+
+    return ($unique -join " ").Trim()
+}
+
+function Get-FirstText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Nodes,
+        [double]$MinLeft,
+        [double]$MaxLeft
+    )
+
+    $match = $Nodes |
+        Where-Object {
+            $_.Name -and
+            $_.Left -ge $MinLeft -and
+            $_.Left -lt $MaxLeft -and
+            -not (Is-NoiseText $_.Name)
+        } |
+        Sort-Object Left, Index |
+        Select-Object -First 1
+
+    if ($match) {
+        return ([string]$match.Name).Trim()
+    }
+
+    return ""
 }
 
 function Get-VisibleNodes {
@@ -217,6 +317,109 @@ function Get-RowPreview {
     }
 }
 
+function Get-VisibleQueueRows {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Nodes
+    )
+
+    $titleCandidates = $Nodes |
+        Where-Object {
+            -not $_.IsOffscreen -and
+            $_.Type -eq "ControlType.DataItem" -and
+            $_.Name -and
+            $_.Left -ge 500 -and
+            $_.Left -lt 860 -and
+            $_.Width -ge 120 -and
+            $_.Height -ge 28 -and
+            $_.Top -ge 540 -and
+            -not (Is-NoiseText $_.Name)
+        } |
+        Sort-Object Top, Left, Index
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    $rowTops = New-Object System.Collections.Generic.List[double]
+
+    foreach ($candidate in $titleCandidates) {
+        $existingTop = $rowTops | Where-Object { [Math]::Abs($_ - $candidate.Top) -le 6 } | Select-Object -First 1
+        if ($null -ne $existingTop) {
+            continue
+        }
+
+        $rowTops.Add($candidate.Top)
+    }
+
+    foreach ($rowTop in ($rowTops | Sort-Object)) {
+        $rowNodes = $Nodes |
+            Where-Object {
+                -not $_.IsOffscreen -and
+                $_.Top -ge ($rowTop - 4) -and
+                $_.Top -le ($rowTop + 24) -and
+                $_.Left -ge 500 -and
+                $_.Left -lt 1338 -and
+                $_.Name
+            }
+
+        $title = Get-FirstText -Nodes $rowNodes -MinLeft 500 -MaxLeft 840
+        $artist = Get-FirstText -Nodes $rowNodes -MinLeft 840 -MaxLeft 1118
+        $album = Get-FirstText -Nodes $rowNodes -MinLeft 1118 -MaxLeft 1338
+
+        if (-not (Has-Text $title)) {
+            continue
+        }
+
+        $rows.Add([pscustomobject]@{
+                title              = $title
+                artist             = $artist
+                album              = $album
+                artworkPath        = $null
+                artworkHash        = $null
+                artworkContentType = $null
+            })
+    }
+
+    return $rows
+}
+
+function Find-QueueRowIndex {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Rows,
+        [string]$Title,
+        [string]$Artist,
+        [string]$Album
+    )
+
+    if (-not (Has-Text $Title)) {
+        return -1
+    }
+
+    for ($index = 0; $index -lt $Rows.Count; $index += 1) {
+        $row = $Rows[$index]
+        $titleMatches = Test-TextMatch -Left $row.title -Right $Title
+        $artistMatches =
+            (-not (Has-Text $Artist)) -or
+            (-not (Has-Text $row.artist)) -or
+            (Test-TextMatch -Left $row.artist -Right $Artist)
+        $albumMatches =
+            (-not (Has-Text $Album)) -or
+            (-not (Has-Text $row.album)) -or
+            (Test-TextMatch -Left $row.album -Right $Album)
+
+        if ($titleMatches -and $artistMatches -and $albumMatches) {
+            return $index
+        }
+    }
+
+    for ($index = 0; $index -lt $Rows.Count; $index += 1) {
+        if (Test-TextMatch -Left $Rows[$index].title -Right $Title) {
+            return $index
+        }
+    }
+
+    return -1
+}
+
 try {
     $process = Get-Process $ProcessName -ErrorAction Stop |
         Where-Object { $_.MainWindowHandle -ne 0 } |
@@ -236,22 +439,26 @@ try {
     $history = Get-SectionAnchor -Nodes $nodes -Name "History"
     $playingFrom = Get-SectionAnchor -Nodes $nodes -Name "Playing from:"
     $nextUp = Get-SectionAnchor -Nodes $nodes -Name "Next Up from:"
-
-    if (-not $history -and -not $nextUp) {
-        [Console]::Out.WriteLine((@{
-                    ok      = $true
-                    visible = $false
-                } | ConvertTo-Json -Compress))
-        exit 0
-    }
-
     $previous = if ($history) { Get-RowPreview -Nodes $nodes -StartIndex $history.Index } else { $null }
     $current = if ($playingFrom) { Get-RowPreview -Nodes $nodes -StartIndex $playingFrom.Index } else { $null }
     $next = if ($nextUp) { Get-RowPreview -Nodes $nodes -StartIndex $nextUp.Index } else { $null }
+    $visible = [bool]($history -or $playingFrom -or $nextUp)
+
+    if (-not $visible) {
+        $rows = @(Get-VisibleQueueRows -Nodes $nodes)
+        $matchIndex = Find-QueueRowIndex -Rows $rows -Title $CurrentTitle -Artist $CurrentArtist -Album $CurrentAlbum
+
+        if ($matchIndex -ge 0) {
+            $visible = $true
+            $current = $rows[$matchIndex]
+            $previous = if ($matchIndex -gt 0) { $rows[$matchIndex - 1] } else { $null }
+            $next = if (($matchIndex + 1) -lt $rows.Count) { $rows[$matchIndex + 1] } else { $null }
+        }
+    }
 
     [Console]::Out.WriteLine((@{
                 ok      = $true
-                visible = $true
+                visible = $visible
                 previous = $previous
                 current = $current
                 next    = $next

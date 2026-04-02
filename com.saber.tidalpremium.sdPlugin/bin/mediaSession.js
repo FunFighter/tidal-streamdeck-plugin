@@ -9,6 +9,9 @@ const loudness = require("loudness");
 const { RENDER } = require("./constants");
 
 const execFile = util.promisify(childProcess.execFile);
+const QUEUE_PREVIEW_CACHE_MS = 15000;
+const QUEUE_PREVIEW_DEBOUNCE_MS = 2500;
+const QUEUE_PREVIEW_TIMEOUT_MS = 2500;
 
 function roundMilliseconds(value) {
   return Math.max(0, Math.round(Number(value) || 0));
@@ -33,6 +36,7 @@ function createEmptyState() {
     artworkPath: "",
     artworkHash: "",
     artworkContentType: "",
+    artworkCandidates: [],
     shuffleActive: false,
     repeatMode: "none",
     queuePreviewPrevious: null,
@@ -68,9 +72,15 @@ class MediaSession extends EventEmitter {
     this.timelineIndex = -1;
     this.queuePreviewCache = {
       trackId: "",
+      current: null,
       previous: null,
       next: null,
       sampledAt: 0,
+    };
+    this.queuePreviewRefresh = {
+      key: "",
+      requestedAt: 0,
+      promise: null,
     };
     this.pendingArtworkTrackId = "";
     this.pendingArtworkStartedAt = 0;
@@ -223,6 +233,15 @@ class MediaSession extends EventEmitter {
     return String(value || "").trim().toLowerCase();
   }
 
+  getQueuePreviewCacheKey(track, appId) {
+    return this.buildTrackId({
+      appId,
+      title: track?.title || "",
+      artist: track?.artist || "",
+      album: track?.album || "",
+    });
+  }
+
   tracksMatch(left, right) {
     if (!left || !right) {
       return false;
@@ -233,92 +252,253 @@ class MediaSession extends EventEmitter {
       && this.normalizeText(left.album) === this.normalizeText(right.album);
   }
 
-  async getSidebarPreviews(track, appId) {
+  tracksLikelyMatch(left, right) {
+    if (!left || !right) {
+      return false;
+    }
+
+    const titleLeft = this.normalizeText(left.title);
+    const titleRight = this.normalizeText(right.title);
+    if (!titleLeft || !titleRight || titleLeft !== titleRight) {
+      return false;
+    }
+
+    const artistLeft = this.normalizeText(left.artist);
+    const artistRight = this.normalizeText(right.artist);
+    const albumLeft = this.normalizeText(left.album);
+    const albumRight = this.normalizeText(right.album);
+    const artistMatches = !artistLeft || !artistRight || artistLeft === artistRight || artistLeft.includes(artistRight) || artistRight.includes(artistLeft);
+    const albumMatches = !albumLeft || !albumRight || albumLeft === albumRight || albumLeft.includes(albumRight) || albumRight.includes(albumLeft);
+    return artistMatches && albumMatches;
+  }
+
+  getSidebarPreviewSnapshot(track, appId) {
     if (!track?.title && !track?.artist) {
       return {
+        current: null,
         previous: null,
         next: null,
       };
     }
 
-    const cacheKey = this.buildTrackId({
-      appId,
-      title: track.title,
-      artist: track.artist,
-      album: track.album,
-    });
+    const cacheKey = this.getQueuePreviewCacheKey(track, appId);
+    const ageMs = Date.now() - this.queuePreviewCache.sampledAt;
 
-    if (
-      this.queuePreviewCache.trackId === cacheKey
-      && (Date.now() - this.queuePreviewCache.sampledAt) < 4000
-    ) {
+    if (this.queuePreviewCache.trackId === cacheKey) {
+      if (ageMs >= QUEUE_PREVIEW_CACHE_MS) {
+        this.requestSidebarPreviewRefresh(track, appId, cacheKey);
+      }
+
       return {
+        current: this.queuePreviewCache.current,
         previous: this.queuePreviewCache.previous,
         next: this.queuePreviewCache.next,
       };
     }
 
-    try {
-      const payload = await this.runFallbackScript("read-tidal-queue.ps1");
-      const previous = payload?.previous || null;
-      const current = payload?.current || null;
-      const next = payload?.next || null;
+    this.requestSidebarPreviewRefresh(track, appId, cacheKey);
+    return {
+      current: null,
+      previous: null,
+      next: null,
+    };
+  }
 
-      if (!payload?.ok || !payload.visible || !this.tracksMatch(track, current)) {
-        this.queuePreviewCache = {
-          trackId: cacheKey,
-          previous: null,
-          next: null,
-          sampledAt: Date.now(),
-        };
-        return {
-          previous: null,
-          next: null,
+  requestSidebarPreviewRefresh(track, appId, cacheKey = this.getQueuePreviewCacheKey(track, appId)) {
+    const now = Date.now();
+
+    if (
+      this.queuePreviewRefresh.key === cacheKey
+      && this.queuePreviewRefresh.promise
+    ) {
+      return;
+    }
+
+    if (
+      this.queuePreviewRefresh.key === cacheKey
+      && (now - this.queuePreviewRefresh.requestedAt) < QUEUE_PREVIEW_DEBOUNCE_MS
+    ) {
+      return;
+    }
+
+    const refresh = {
+      key: cacheKey,
+      requestedAt: now,
+      promise: null,
+    };
+
+    refresh.promise = this.refreshSidebarPreviews(track, appId, cacheKey).finally(() => {
+      if (this.queuePreviewRefresh === refresh) {
+        this.queuePreviewRefresh = {
+          key: cacheKey,
+          requestedAt: refresh.requestedAt,
+          promise: null,
         };
       }
+    });
 
-      const buildPreview = (item, source) => {
-        if (!item) {
-          return null;
-        }
+    this.queuePreviewRefresh = refresh;
+  }
 
-        return {
-          trackId: this.buildTrackId({
-            appId,
-            title: item.title,
-            artist: item.artist,
-            album: item.album,
-          }),
-          title: item.title || "",
-          artist: item.artist || "",
-          album: item.album || "",
+  buildSidebarPreview(item, appId, source) {
+    if (!item) {
+      return null;
+    }
+
+    return {
+      trackId: this.buildTrackId({
+        appId,
+        title: item.title,
+        artist: item.artist,
+        album: item.album,
+      }),
+      title: item.title || "",
+      artist: item.artist || "",
+      album: item.album || "",
+      artworkPath: item.artworkPath || "",
+      artworkHash: item.artworkHash || "",
+      artworkContentType: item.artworkContentType || "",
+      artworkCandidates: item.artworkPath
+        ? [{
           artworkPath: item.artworkPath || "",
           artworkHash: item.artworkHash || "",
           artworkContentType: item.artworkContentType || "",
           source,
-        };
+        }]
+        : [],
+      source,
+    };
+  }
+
+  updateQueuePreviewCache(cacheKey, previews, reason = "queue-preview-refresh") {
+    const previousSignature = JSON.stringify({
+      current: this.queuePreviewCache.current?.trackId || "",
+      previous: this.queuePreviewCache.previous?.trackId || "",
+      next: this.queuePreviewCache.next?.trackId || "",
+    });
+
+    this.queuePreviewCache = {
+      trackId: cacheKey,
+      current: previews.current || null,
+      previous: previews.previous || null,
+      next: previews.next || null,
+      sampledAt: Date.now(),
+    };
+
+    const nextSignature = JSON.stringify({
+      current: this.queuePreviewCache.current?.trackId || "",
+      previous: this.queuePreviewCache.previous?.trackId || "",
+      next: this.queuePreviewCache.next?.trackId || "",
+    });
+
+    if (this.state.trackId !== cacheKey || previousSignature === nextSignature) {
+      return;
+    }
+
+    const artworkState = previews.current
+      ? this.createArtworkState(
+        previews.current,
+        ...(Array.isArray(this.state.artworkCandidates) ? this.state.artworkCandidates : []),
+        this.state,
+      )
+      : {
+        artworkPath: this.state.artworkPath,
+        artworkHash: this.state.artworkHash,
+        artworkContentType: this.state.artworkContentType,
+        artworkCandidates: Array.isArray(this.state.artworkCandidates) ? this.state.artworkCandidates.slice() : [],
       };
 
-      const previousPreview = buildPreview(previous, "history");
-      const nextPreview = buildPreview(next, "queue");
+    this.applyState({
+      ...this.state,
+      artworkPath: artworkState.artworkPath,
+      artworkHash: artworkState.artworkHash,
+      artworkContentType: artworkState.artworkContentType,
+      artworkCandidates: artworkState.artworkCandidates,
+      queuePreviewPrevious: previews.previous || null,
+      queuePreviewNext: previews.next || null,
+    }, reason);
+  }
 
-      this.queuePreviewCache = {
-        trackId: cacheKey,
-        previous: previousPreview,
-        next: nextPreview,
-        sampledAt: Date.now(),
-      };
-      return {
-        previous: previousPreview,
-        next: nextPreview,
-      };
+  async refreshSidebarPreviews(track, appId, cacheKey) {
+    try {
+      const payload = await this.runFallbackScript("read-tidal-queue.ps1", [
+        "-CurrentTitle",
+        track?.title || "",
+        "-CurrentArtist",
+        track?.artist || "",
+        "-CurrentAlbum",
+        track?.album || "",
+      ], {
+        timeoutMs: QUEUE_PREVIEW_TIMEOUT_MS,
+      });
+
+      const current = payload?.current || null;
+      const previous = payload?.previous || null;
+      const next = payload?.next || null;
+
+      if (!payload?.ok || !payload.visible || !this.tracksLikelyMatch(track, current)) {
+        this.updateQueuePreviewCache(cacheKey, {
+          current: null,
+          previous: null,
+          next: null,
+        }, "queue-preview-clear");
+        return;
+      }
+
+      this.updateQueuePreviewCache(cacheKey, {
+        current: this.buildSidebarPreview(current, appId, "sidebar-current"),
+        previous: this.buildSidebarPreview(previous, appId, "history"),
+        next: this.buildSidebarPreview(next, appId, "queue"),
+      });
     } catch (error) {
       this.logger.warn("queue-preview-read-failed", { error: error.message });
-      return {
-        previous: null,
-        next: null,
-      };
     }
+  }
+
+  createArtworkCandidate(artwork, source) {
+    if (!artwork?.artworkPath) {
+      return null;
+    }
+
+    return {
+      artworkPath: artwork.artworkPath || "",
+      artworkHash: artwork.artworkHash || "",
+      artworkContentType: artwork.artworkContentType || "",
+      source: source || artwork.source || "",
+    };
+  }
+
+  mergeArtworkCandidates(...artworks) {
+    const candidates = [];
+    const seen = new Set();
+
+    for (const artwork of artworks) {
+      const candidate = this.createArtworkCandidate(artwork, artwork?.source);
+      if (!candidate) {
+        continue;
+      }
+
+      const dedupeKey = `${candidate.artworkHash || ""}|${candidate.artworkPath || ""}`;
+      if (seen.has(dedupeKey)) {
+        continue;
+      }
+
+      seen.add(dedupeKey);
+      candidates.push(candidate);
+    }
+
+    return candidates;
+  }
+
+  createArtworkState(...artworks) {
+    const candidates = this.mergeArtworkCandidates(...artworks);
+    const primary = candidates[0] || null;
+    return {
+      artworkPath: primary?.artworkPath || "",
+      artworkHash: primary?.artworkHash || "",
+      artworkContentType: primary?.artworkContentType || "",
+      artworkCandidates: candidates,
+    };
   }
 
   async getGSMTCArtwork(track) {
@@ -379,6 +559,7 @@ class MediaSession extends EventEmitter {
         artworkPath: previous.artworkPath,
         artworkHash: previous.artworkHash,
         artworkContentType: previous.artworkContentType,
+        artworkCandidates: Array.isArray(previous.artworkCandidates) ? previous.artworkCandidates.slice() : [],
       };
     }
 
@@ -411,6 +592,7 @@ class MediaSession extends EventEmitter {
         artworkPath: "",
         artworkHash: "",
         artworkContentType: "",
+        artworkCandidates: [],
       };
     }
 
@@ -432,7 +614,33 @@ class MediaSession extends EventEmitter {
       artworkPath: state.artworkPath || "",
       artworkHash: state.artworkHash || "",
       artworkContentType: state.artworkContentType || "",
+      artworkCandidates: Array.isArray(state.artworkCandidates) ? state.artworkCandidates.slice() : [],
     });
+  }
+
+  mergePreviewWithCatalog(preview) {
+    if (!preview?.trackId) {
+      return preview || null;
+    }
+
+    const catalogEntry = this.trackCatalog.get(preview.trackId);
+    if (!catalogEntry) {
+      return preview;
+    }
+
+    const artworkState = this.createArtworkState(
+      catalogEntry,
+      ...(Array.isArray(preview.artworkCandidates) ? preview.artworkCandidates : []),
+      preview,
+    );
+
+    return {
+      ...preview,
+      artworkPath: artworkState.artworkPath,
+      artworkHash: artworkState.artworkHash,
+      artworkContentType: artworkState.artworkContentType,
+      artworkCandidates: artworkState.artworkCandidates,
+    };
   }
 
   syncTrackTimeline(next) {
@@ -493,9 +701,12 @@ class MediaSession extends EventEmitter {
     const previousId = this.timelineIndex > 0 ? this.trackTimeline[this.timelineIndex - 1] : null;
     const nextId = this.timelineIndex < this.trackTimeline.length - 1 ? this.trackTimeline[this.timelineIndex + 1] : null;
 
+    const previousPreview = state.queuePreviewPrevious || (previousId ? this.trackCatalog.get(previousId) || null : null);
+    const nextPreview = state.queuePreviewNext || (!state.shuffleActive && nextId ? this.trackCatalog.get(nextId) || null : null);
+
     return {
-      previous: state.queuePreviewPrevious || (previousId ? this.trackCatalog.get(previousId) || null : null),
-      next: state.queuePreviewNext || (!state.shuffleActive && nextId ? this.trackCatalog.get(nextId) || null : null),
+      previous: this.mergePreviewWithCatalog(previousPreview),
+      next: this.mergePreviewWithCatalog(nextPreview),
     };
   }
 
@@ -590,11 +801,27 @@ class MediaSession extends EventEmitter {
       artist: nowPlaying.artist || "",
       album: nowPlaying.albumTitle || "",
     };
-    const gsmtcArtwork = active ? await this.getGSMTCArtwork(track) : null;
-    const sidebarPreviews = active ? await this.getSidebarPreviews(track, nowPlaying.app || "") : { previous: null, next: null };
-    const artworkPath = gsmtcArtwork?.artworkPath || (artwork?.ok ? artwork.path : "");
-    const artworkHash = gsmtcArtwork?.artworkHash || (artwork?.ok ? artwork.trackHash : "");
-    const artworkContentType = gsmtcArtwork?.artworkContentType || (artwork?.ok ? artwork.contentType : "");
+    const nativeArtwork = artwork?.ok
+      ? {
+        artworkPath: artwork.path || "",
+        artworkHash: artwork.trackHash || "",
+        artworkContentType: artwork.contentType || "",
+        source: "native",
+      }
+      : null;
+    const currentTrackId = this.getQueuePreviewCacheKey(track, nowPlaying.app || "");
+    const sameTrackAsPrevious = active && currentTrackId === this.state.trackId;
+    const gsmtcArtwork = active && (sameTrackAsPrevious || !nativeArtwork) ? await this.getGSMTCArtwork(track) : null;
+    const sidebarPreviews = active ? this.getSidebarPreviewSnapshot(track, nowPlaying.app || "") : {
+      current: null,
+      previous: null,
+      next: null,
+    };
+    const artworkState = this.createArtworkState(
+      sidebarPreviews.current,
+      gsmtcArtwork && { ...gsmtcArtwork, source: "gsmtc" },
+      nativeArtwork,
+    );
 
     return {
       bridge: "native",
@@ -604,22 +831,17 @@ class MediaSession extends EventEmitter {
       title: track.title,
       artist: track.artist,
       album: track.album,
-      trackId: this.buildTrackId({
-        appId: nowPlaying.app,
-        title: track.title,
-        artist: track.artist,
-        album: track.album,
-        durationMs,
-      }),
+      trackId: currentTrackId,
       durationMs,
       positionMs,
       sampledAt: Date.now(),
       playbackStatus,
       isPlaying: playbackStatus === "playing",
       isPaused: playbackStatus === "paused",
-      artworkPath,
-      artworkHash,
-      artworkContentType,
+      artworkPath: artworkState.artworkPath,
+      artworkHash: artworkState.artworkHash,
+      artworkContentType: artworkState.artworkContentType,
+      artworkCandidates: artworkState.artworkCandidates,
       shuffleActive: Boolean(nowPlaying.isShuffleActive),
       repeatMode: String(nowPlaying.autoRepeatMode || "none").toLowerCase(),
       queuePreviewPrevious: sidebarPreviews.previous,
@@ -628,14 +850,14 @@ class MediaSession extends EventEmitter {
         previous: null,
         next: null,
       },
-      sessionVolumeAvailable: this.canUseSessionVolume(),
+      sessionVolumeAvailable: false,
       volume,
       stateChangedAt: this.state.stateChangedAt,
       trackChangedAt: this.state.trackChangedAt,
     };
   }
 
-  async runFallbackScript(scriptName, additionalArgs = []) {
+  async runFallbackScript(scriptName, additionalArgs = [], options = {}) {
     const scriptPath = path.resolve(this.pluginDir, "fallback", scriptName);
     const args = [
       "-NoProfile",
@@ -648,7 +870,7 @@ class MediaSession extends EventEmitter {
 
     const { stdout } = await execFile(this.powerShellPath, args, {
       windowsHide: true,
-      timeout: 7000,
+      timeout: options.timeoutMs || 7000,
       maxBuffer: 1024 * 1024,
     });
 
@@ -696,6 +918,14 @@ class MediaSession extends EventEmitter {
       artworkPath: payload.artworkPath || "",
       artworkHash: payload.artworkHash || "",
       artworkContentType: payload.artworkContentType || "",
+      artworkCandidates: payload.artworkPath
+        ? [{
+          artworkPath: payload.artworkPath || "",
+          artworkHash: payload.artworkHash || "",
+          artworkContentType: payload.artworkContentType || "",
+          source: "gsmtc",
+        }]
+        : [],
       shuffleActive: false,
       repeatMode: "none",
       queuePreviewPrevious: null,
@@ -720,25 +950,6 @@ class MediaSession extends EventEmitter {
   }
 
   async getVolumeState() {
-    if (this.canUseSessionVolume()) {
-      try {
-        const [volume, mute] = await Promise.all([
-          this.native.addon.getAppVolume(),
-          this.native.addon.getAppMute(),
-        ]);
-
-        if (volume?.ok) {
-          return {
-            value: Math.max(0, Math.min(100, Math.round((Number(volume.volume) || 0) * 100))),
-            muted: Boolean(mute?.muted),
-            source: "session",
-          };
-        }
-      } catch (error) {
-        this.logger.warn("session-volume-read-failed", { error: error.message });
-      }
-    }
-
     if (this.native?.media && typeof this.native.media.getVolume === "function") {
       try {
         const response = this.native.media.getVolume();
@@ -776,9 +987,7 @@ class MediaSession extends EventEmitter {
     const current = await this.getVolumeState();
     const nextValue = Math.max(0, Math.min(100, Math.round(current.value + deltaPercent)));
 
-    if (current.source === "session" && this.canUseSessionVolume()) {
-      this.native.addon.setAppVolume(nextValue / 100);
-    } else if (this.native?.media && typeof this.native.media.setVolume === "function") {
+    if (this.native?.media && typeof this.native.media.setVolume === "function") {
       this.native.media.setVolume(nextValue / 100);
       if (typeof this.native.media.setMuted === "function" && current.muted && nextValue > 0) {
         this.native.media.setMuted(false);
@@ -800,9 +1009,7 @@ class MediaSession extends EventEmitter {
     const current = await this.getVolumeState();
     const nextMuted = !current.muted;
 
-    if (current.source === "session" && this.canUseSessionVolume()) {
-      this.native.addon.setAppMute(nextMuted);
-    } else if (this.native?.media && typeof this.native.media.setMuted === "function") {
+    if (this.native?.media && typeof this.native.media.setMuted === "function") {
       this.native.media.setMuted(nextMuted);
     } else {
       await loudness.setMuted(nextMuted);

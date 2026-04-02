@@ -62,7 +62,7 @@ class Controls {
   }
 
   async onDialRotate(message) {
-    if (message.action !== ACTIONS.VOLUME) {
+    if (message.action !== ACTIONS.VOLUME && message.action !== ACTIONS.NOW_PLAYING) {
       return null;
     }
 
@@ -72,6 +72,7 @@ class Controls {
     }
 
     const step = message.payload?.pressed ? 4 : 2;
+    // Stream Deck reports clockwise/right turns as positive ticks.
     const result = await this.mediaSession.changeVolume(ticks * step);
     this.logger.info("volume-adjusted", {
       context: message.context,

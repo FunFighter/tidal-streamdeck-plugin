@@ -38,6 +38,16 @@
       "border_w": 0,
       "bar_bg_c": "#4d5b73",
       "bar_fill_c": "#0b6cf4"
+    },
+    {
+      "key": "time",
+      "type": "text",
+      "rect": [88, 88, 100, 12],
+      "zOrder": 1,
+      "font": { "size": 10, "weight": 700 },
+      "alignment": "right",
+      "text-overflow": "clip",
+      "color": "#eef4fb"
     }
   ]
 }

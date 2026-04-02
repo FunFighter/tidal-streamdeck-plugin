@@ -39,6 +39,20 @@ function canvasToDataUrl(canvas) {
   return `data:image/png;base64,${canvas.toBuffer("image/png").toString("base64")}`;
 }
 
+function formatDurationMs(value) {
+  const totalSeconds = Math.max(0, Math.floor((Number(value) || 0) / 1000));
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 class Renderer {
   constructor({ cache, logger, debug }) {
     this.cache = cache;
@@ -224,6 +238,11 @@ class Renderer {
       return;
     }
 
+    ctx.imageSmoothingEnabled = true;
+    if ("imageSmoothingQuality" in ctx) {
+      ctx.imageSmoothingQuality = "high";
+    }
+
     const sourceWidth = image.width || width;
     const sourceHeight = image.height || height;
     const scale = Math.max(width / sourceWidth, height / sourceHeight);
@@ -248,6 +267,26 @@ class Renderer {
     fillRoundRect(ctx, 150, 10, 36, 24, 10, "rgba(0,0,0,0.42)");
     this.drawTransportIcon(ctx, snapshot.isPlaying ? "pause" : "play", 168, 22, 16, "#ffffff");
     return canvasToDataUrl(canvas);
+  }
+
+  drawNowPlayingTime(ctx, snapshot, bounds) {
+    if (!snapshot.hasMedia || !snapshot.durationMs) {
+      return;
+    }
+
+    const label = `${formatDurationMs(snapshot.positionMs)} / ${formatDurationMs(snapshot.durationMs)}`;
+    ctx.save();
+    ctx.font = "700 10px Segoe UI";
+    const metrics = ctx.measureText(label);
+    const width = Math.ceil(metrics.width) + 12;
+    const x = bounds.x + bounds.width - width;
+    const y = bounds.y;
+    fillRoundRect(ctx, x, y, width, bounds.height, Math.min(8, bounds.height / 2), "rgba(0,0,0,0.48)");
+    ctx.fillStyle = "#eef4fb";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, x + (width / 2), y + (bounds.height / 2) + 0.5);
+    ctx.restore();
   }
 
   renderTransportTouchBackground(snapshot, kind, label, preview, previewArtwork) {
@@ -349,6 +388,24 @@ class Renderer {
     ctx.fillText(`${snapshot.bridge}`, 14, 28);
   }
 
+  drawVolumeOverlay(ctx, overlay) {
+    if (!overlay) {
+      return;
+    }
+
+    const label = overlay.muted ? "Muted" : `Vol ${Math.round(overlay.value)}%`;
+    ctx.save();
+    ctx.font = "700 11px Segoe UI";
+    const metrics = ctx.measureText(label);
+    const width = Math.ceil(metrics.width) + 14;
+    fillRoundRect(ctx, 12, 12, width, 22, 10, `rgba(0,0,0,${0.34 + (overlay.opacity * 0.24)})`);
+    ctx.fillStyle = `rgba(255,255,255,${0.76 + (overlay.opacity * 0.24)})`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, 12 + (width / 2), 23);
+    ctx.restore();
+  }
+
   async renderNowPlaying(context, snapshot, overlay) {
     const canvas = createCanvas(RENDER.KEY_SIZE, RENDER.KEY_SIZE);
     const ctx = canvas.getContext("2d");
@@ -371,15 +428,22 @@ class Renderer {
 
     ctx.fillStyle = "#ffffff";
     ctx.font = "700 18px Segoe UI";
-    const titleState = this.drawMarquee(ctx, `${context.context}:title`, title, 12, 102, 120, now, "700 18px Segoe UI", "#ffffff");
+    const titleState = this.drawMarquee(ctx, `${context.context}:title`, title, 12, 102, 118, now, "700 18px Segoe UI", "#ffffff");
 
     ctx.font = "600 14px Segoe UI";
-    const artistState = this.drawMarquee(ctx, `${context.context}:artist`, artist, 12, 122, 120, now, "600 14px Segoe UI", "rgba(225,233,241,0.92)");
+    const artistState = this.drawMarquee(ctx, `${context.context}:artist`, artist, 12, 122, 118, now, "600 14px Segoe UI", "rgba(225,233,241,0.92)");
 
     fillRoundRect(ctx, 104, 12, 28, 28, 10, "rgba(0,0,0,0.46)");
     const iconKind = snapshot.hasMedia ? (snapshot.isPlaying ? "pause" : "play") : "play";
     this.drawTransportIcon(ctx, iconKind, 118, 26, 18, "#ffffff");
 
+    this.drawVolumeOverlay(ctx, overlay);
+    this.drawNowPlayingTime(ctx, snapshot, {
+      x: 12,
+      y: 112,
+      width: 120,
+      height: 14,
+    });
     this.drawProgressBar(ctx, snapshot.progress);
     this.drawDebug(ctx, context.context, snapshot, now);
 
@@ -405,6 +469,9 @@ class Renderer {
         title: snapshot.hasMedia ? (snapshot.title || "Now Playing") : "TIDAL",
         artist: snapshot.hasMedia ? (snapshot.artist || snapshot.playbackStatus) : "No media",
         progress: Math.round(snapshot.progress * 100),
+        time: snapshot.hasMedia && snapshot.durationMs
+          ? `${formatDurationMs(snapshot.positionMs)} / ${formatDurationMs(snapshot.durationMs)}`
+          : "",
       };
       output.fingerprint = JSON.stringify({
         ...JSON.parse(fingerprint),
@@ -440,6 +507,7 @@ class Renderer {
         artworkPath: preview.artworkPath || "",
         artworkHash: preview.artworkHash || "",
         artworkContentType: preview.artworkContentType || "",
+        artworkCandidates: Array.isArray(preview.artworkCandidates) ? preview.artworkCandidates : [],
       });
     }
 

@@ -13,6 +13,10 @@ const MAX_BLACK_AVERAGE_LUMA = 10;
 const MAX_BLACK_STD_DEV = 8;
 const MAX_BLACK_MAX_LUMA = 28;
 const MIN_NON_DARK_RATIO = 0.01;
+const MAX_FLAT_COLOR_STD_DEV = 7;
+const MAX_FLAT_CHANNEL_SPREAD = 20;
+const MAX_FLAT_BUCKET_COUNT = 3;
+const MIN_DOMINANT_BUCKET_RATIO = 0.92;
 
 class AlbumArtCache {
   constructor({ pluginDir, logger, memoryLimit = 48, diskLimit = 160 }) {
@@ -97,8 +101,15 @@ class AlbumArtCache {
     let veryDarkCount = 0;
     let nonDarkCount = 0;
     let maxLuma = 0;
+    let minRed = 255;
+    let minGreen = 255;
+    let minBlue = 255;
+    let maxRed = 0;
+    let maxGreen = 0;
+    let maxBlue = 0;
     let totalLuma = 0;
     let totalLumaSquared = 0;
+    const buckets = new Map();
 
     for (let index = 0; index < data.length; index += 4) {
       const alpha = data[index + 3] / 255;
@@ -110,10 +121,18 @@ class AlbumArtCache {
       const green = data[index + 1];
       const blue = data[index + 2];
       const luma = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+      const bucketKey = `${red >> 5}:${green >> 5}:${blue >> 5}`;
       opaqueCount += 1;
       totalLuma += luma;
       totalLumaSquared += luma * luma;
       maxLuma = Math.max(maxLuma, luma);
+      minRed = Math.min(minRed, red);
+      minGreen = Math.min(minGreen, green);
+      minBlue = Math.min(minBlue, blue);
+      maxRed = Math.max(maxRed, red);
+      maxGreen = Math.max(maxGreen, green);
+      maxBlue = Math.max(maxBlue, blue);
+      buckets.set(bucketKey, (buckets.get(bucketKey) || 0) + 1);
 
       if (luma <= VERY_DARK_LUMA) {
         veryDarkCount += 1;
@@ -140,6 +159,9 @@ class AlbumArtCache {
     const standardDeviation = Math.sqrt(variance);
     const veryDarkRatio = veryDarkCount / opaqueCount;
     const nonDarkRatio = nonDarkCount / opaqueCount;
+    const dominantBucketCount = Math.max(0, ...buckets.values());
+    const dominantBucketRatio = dominantBucketCount / opaqueCount;
+    const channelSpread = Math.max(maxRed - minRed, maxGreen - minGreen, maxBlue - minBlue);
     const looksBlack =
       opaqueRatio >= MIN_OPAQUE_RATIO
       && veryDarkRatio >= 0.985
@@ -147,10 +169,18 @@ class AlbumArtCache {
       && averageLuma <= MAX_BLACK_AVERAGE_LUMA
       && standardDeviation <= MAX_BLACK_STD_DEV
       && maxLuma <= MAX_BLACK_MAX_LUMA;
+    const looksFlatColor =
+      opaqueRatio >= MIN_OPAQUE_RATIO
+      && standardDeviation <= MAX_FLAT_COLOR_STD_DEV
+      && channelSpread <= MAX_FLAT_CHANNEL_SPREAD
+      && buckets.size <= MAX_FLAT_BUCKET_COUNT
+      && dominantBucketRatio >= MIN_DOMINANT_BUCKET_RATIO;
+    const usable = !looksBlack && !looksFlatColor;
+    const reason = looksBlack ? "solid-black-frame" : (looksFlatColor ? "flat-color-frame" : "ok");
 
     return {
-      usable: !looksBlack,
-      reason: looksBlack ? "solid-black-frame" : "ok",
+      usable,
+      reason,
       stats: {
         opaqueRatio: Number(opaqueRatio.toFixed(3)),
         veryDarkRatio: Number(veryDarkRatio.toFixed(3)),
@@ -158,6 +188,9 @@ class AlbumArtCache {
         averageLuma: Number(averageLuma.toFixed(1)),
         standardDeviation: Number(standardDeviation.toFixed(1)),
         maxLuma: Number(maxLuma.toFixed(1)),
+        dominantBucketRatio: Number(dominantBucketRatio.toFixed(3)),
+        bucketCount: buckets.size,
+        channelSpread,
       },
     };
   }
@@ -258,22 +291,50 @@ class AlbumArtCache {
     );
   }
 
-  async cacheFile(sourcePath, key, contentType) {
+  normalizeCandidates(snapshot) {
+    const candidates = [];
+    const seen = new Set();
+    const pushCandidate = (candidate) => {
+      if (!candidate?.artworkPath) {
+        return;
+      }
+
+      const dedupeKey = `${candidate.artworkHash || ""}|${candidate.artworkPath || ""}`;
+      if (seen.has(dedupeKey)) {
+        return;
+      }
+
+      seen.add(dedupeKey);
+      candidates.push({
+        artworkPath: candidate.artworkPath,
+        artworkHash: candidate.artworkHash || "",
+        artworkContentType: candidate.artworkContentType || "",
+        source: candidate.source || "",
+      });
+    };
+
+    if (Array.isArray(snapshot?.artworkCandidates)) {
+      snapshot.artworkCandidates.forEach(pushCandidate);
+    }
+
+    pushCandidate(snapshot);
+    return candidates;
+  }
+
+  async cacheFile(sourcePath, key, contentType, context = {}) {
     if (!sourcePath || !fs.existsSync(sourcePath)) {
       return null;
     }
 
-    const existingPath = this.findExistingPath(key);
     const targetPath = path.join(this.artworkDir, `${key}${this.extensionFor(sourcePath, contentType)}`);
     const sourceImage = await this.loadValidatedImage(sourcePath, {
       stage: "source",
       key,
+      ...context,
     });
 
     if (!sourceImage) {
-      return this.readCachedEntry(key, existingPath || targetPath, {
-        fallbackFrom: sourcePath,
-      });
+      return null;
     }
 
     await fs.promises.copyFile(sourcePath, targetPath);
@@ -291,7 +352,8 @@ class AlbumArtCache {
 
   async getArtwork(snapshot) {
     const key = this.buildKey(snapshot);
-    if (!key || !snapshot.artworkPath) {
+    const candidates = this.normalizeCandidates(snapshot);
+    if (!key || candidates.length === 0) {
       return null;
     }
 
@@ -311,14 +373,28 @@ class AlbumArtCache {
       }
     }
 
-    const entry = await this.cacheFile(snapshot.artworkPath, key, snapshot.artworkContentType);
-    if (!entry) {
+    const existingPath = this.findExistingPath(key);
+    for (const candidate of candidates) {
+      const entry = await this.cacheFile(candidate.artworkPath, key, candidate.artworkContentType || snapshot.artworkContentType, {
+        candidateSource: candidate.source || "unknown",
+      });
+      if (entry) {
+        this.memory.set(key, entry);
+        this.pruneMemory();
+        return entry;
+      }
+    }
+
+    const fallbackEntry = await this.readCachedEntry(key, existingPath, {
+      fallbackFromCandidates: candidates.length,
+    });
+    if (!fallbackEntry) {
       return null;
     }
 
-    this.memory.set(key, entry);
+    this.memory.set(key, fallbackEntry);
     this.pruneMemory();
-    return entry;
+    return fallbackEntry;
   }
 }
 
