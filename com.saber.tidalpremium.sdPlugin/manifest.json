@@ -6,7 +6,7 @@
   "Author": "OpenAI Codex",
   "Description": "Premium-feeling TIDAL controls for Stream Deck on Windows with GSMTC metadata, queue-aware previews, and Stream Deck+ dial volume.",
   "Icon": "imgs/plugin/icon",
-  "Category": "TIDAL Premium",
+  "Category": "TIDAL",
   "CategoryIcon": "imgs/plugin/category",
   "CodePath": "bin/plugin.js",
   "SDKVersion": 2,
