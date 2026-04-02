@@ -17,6 +17,9 @@ const MAX_FLAT_COLOR_STD_DEV = 7;
 const MAX_FLAT_CHANNEL_SPREAD = 20;
 const MAX_FLAT_BUCKET_COUNT = 3;
 const MIN_DOMINANT_BUCKET_RATIO = 0.92;
+const MAX_LOW_ENTROPY_STD_DEV = 5;
+const MAX_LOW_ENTROPY_CHANNEL_SPREAD = 24;
+const MAX_LOW_ENTROPY_BUCKET_COUNT = 2;
 
 class AlbumArtCache {
   constructor({ pluginDir, logger, memoryLimit = 48, diskLimit = 160 }) {
@@ -175,8 +178,15 @@ class AlbumArtCache {
       && channelSpread <= MAX_FLAT_CHANNEL_SPREAD
       && buckets.size <= MAX_FLAT_BUCKET_COUNT
       && dominantBucketRatio >= MIN_DOMINANT_BUCKET_RATIO;
-    const usable = !looksBlack && !looksFlatColor;
-    const reason = looksBlack ? "solid-black-frame" : (looksFlatColor ? "flat-color-frame" : "ok");
+    const looksLowEntropy =
+      opaqueRatio >= MIN_OPAQUE_RATIO
+      && standardDeviation <= MAX_LOW_ENTROPY_STD_DEV
+      && channelSpread <= MAX_LOW_ENTROPY_CHANNEL_SPREAD
+      && buckets.size <= MAX_LOW_ENTROPY_BUCKET_COUNT;
+    const usable = !looksBlack && !looksFlatColor && !looksLowEntropy;
+    const reason = looksBlack
+      ? "solid-black-frame"
+      : (looksFlatColor ? "flat-color-frame" : (looksLowEntropy ? "low-entropy-frame" : "ok"));
 
     return {
       usable,

@@ -2,6 +2,7 @@
 
 const { EventEmitter } = require("events");
 const fs = require("fs");
+const https = require("https");
 const path = require("path");
 const util = require("util");
 const childProcess = require("child_process");
@@ -11,7 +12,84 @@ const { RENDER } = require("./constants");
 const execFile = util.promisify(childProcess.execFile);
 const QUEUE_PREVIEW_CACHE_MS = 15000;
 const QUEUE_PREVIEW_DEBOUNCE_MS = 2500;
-const QUEUE_PREVIEW_TIMEOUT_MS = 2500;
+const QUEUE_PREVIEW_TIMEOUT_MS = 6000;
+const TIDAL_PREVIEW_LOOKUP_TIMEOUT_MS = 9000;
+const TIDAL_PREVIEW_LOOKUP_WINDOW_CHARS = 12000;
+
+function normalizeLookupText(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\u2018\u2019\u2032]/g, "'")
+    .replace(/â€™|â€˜|â€²/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/[^a-z0-9]+/gi, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function decodeCachedJsonText(value) {
+  const source = String(value || "");
+  if (!source) {
+    return "";
+  }
+
+  try {
+    return JSON.parse(`"${source.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`);
+  } catch (error) {
+    return source;
+  }
+}
+
+function buildTidalCoverUrl(coverId, size = 640) {
+  const parts = String(coverId || "").trim().split("-").filter(Boolean);
+  if (parts.length !== 5) {
+    return "";
+  }
+
+  return `https://resources.tidal.com/images/${parts.join("/")}/${size}x${size}.jpg`;
+}
+
+function downloadToFile(url, targetPath, timeoutMs = TIDAL_PREVIEW_LOOKUP_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: {
+        "User-Agent": "tidal-streamdeck-plugin/1.0",
+      },
+    }, (response) => {
+      if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        response.resume();
+        downloadToFile(response.headers.location, targetPath, timeoutMs).then(resolve).catch(reject);
+        return;
+      }
+
+      if (response.statusCode !== 200) {
+        response.resume();
+        reject(new Error(`Unexpected status ${response.statusCode} for ${url}`));
+        return;
+      }
+
+      const file = fs.createWriteStream(targetPath);
+      response.pipe(file);
+      file.on("finish", () => {
+        file.close(() => resolve(targetPath));
+      });
+      file.on("error", (error) => {
+        file.destroy();
+        reject(error);
+      });
+    });
+
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error(`Timed out downloading ${url}`));
+    });
+    request.on("error", reject);
+  });
+}
 
 function roundMilliseconds(value) {
   return Math.max(0, Math.round(Number(value) || 0));
@@ -84,6 +162,8 @@ class MediaSession extends EventEmitter {
     };
     this.pendingArtworkTrackId = "";
     this.pendingArtworkStartedAt = 0;
+    this.previewMetadataCache = new Map();
+    this.previewMetadataLookups = new Map();
     this.native = this.loadNativeBridge();
     this.powerShellPath = path.join(
       process.env.SystemRoot || "C:\\Windows",
@@ -92,6 +172,9 @@ class MediaSession extends EventEmitter {
       "v1.0",
       "powershell.exe",
     );
+    this.tidalCacheDataDir = path.join(process.env.APPDATA || "", "TIDAL", "Cache", "Cache_Data");
+    this.tidalPreviewArtworkDir = path.resolve(this.pluginDir, "..", "cache", "tidal-preview-artwork");
+    fs.mkdirSync(this.tidalPreviewArtworkDir, { recursive: true });
   }
 
   loadNativeBridge() {
@@ -355,19 +438,221 @@ class MediaSession extends EventEmitter {
       title: item.title || "",
       artist: item.artist || "",
       album: item.album || "",
-      artworkPath: item.artworkPath || "",
-      artworkHash: item.artworkHash || "",
-      artworkContentType: item.artworkContentType || "",
-      artworkCandidates: item.artworkPath
-        ? [{
-          artworkPath: item.artworkPath || "",
-          artworkHash: item.artworkHash || "",
-          artworkContentType: item.artworkContentType || "",
-          source,
-        }]
-        : [],
+      artworkPath: "",
+      artworkHash: "",
+      artworkContentType: "",
+      artworkCandidates: [],
       source,
     };
+  }
+
+  buildPreviewMetadataKey(track) {
+    const title = normalizeLookupText(track?.title);
+    const artist = normalizeLookupText(track?.artist);
+    if (!title) {
+      return "";
+    }
+
+    return `${title}|${artist}`;
+  }
+
+  buildPreviewTitleCandidates(title) {
+    const raw = String(title || "").trim();
+    if (!raw) {
+      return [];
+    }
+
+    const candidates = new Set([
+      raw,
+      raw.replace(/[\u2018\u2019]/g, "'"),
+      raw.replace(/'/g, "\u2019"),
+      raw.replace(/[\u2018\u2019]/g, "â€™"),
+      raw.replace(/'/g, "â€™"),
+    ]);
+
+    return [...candidates].filter(Boolean);
+  }
+
+  extractMetadataFromCacheWindow(windowText, preview) {
+    const artistsMatch = windowText.match(/"artists":\[(.*?)\],"album":\{/s);
+    const albumMatch = windowText.match(/"album":\{"id":[^}]*?"title":"([^"]*)","cover":"([0-9a-f-]{36})"/i);
+    if (!albumMatch) {
+      return null;
+    }
+
+    const artistBlock = artistsMatch?.[1] || "";
+    const artistMatches = [...artistBlock.matchAll(/"name":"([^"]+)"/g)].map((match) => decodeCachedJsonText(match[1]));
+    const normalizedArtist = normalizeLookupText(preview?.artist);
+    const artistMatchesPreview = !normalizedArtist
+      || artistMatches.some((name) => normalizeLookupText(name) === normalizedArtist);
+
+    if (!artistMatchesPreview) {
+      return null;
+    }
+
+    return {
+      album: decodeCachedJsonText(albumMatch[1]),
+      coverId: albumMatch[2],
+    };
+  }
+
+  async scanTidalCacheForPreview(preview) {
+    if (!preview?.title || !fs.existsSync(this.tidalCacheDataDir)) {
+      return null;
+    }
+
+    let entries = [];
+    try {
+      entries = await fs.promises.readdir(this.tidalCacheDataDir, { withFileTypes: true });
+    } catch (error) {
+      this.logger.warn("preview-cache-list-failed", { error: error.message });
+      return null;
+    }
+
+    const files = entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .filter((name) => /^f_/i.test(name) || /^data_[123]$/i.test(name))
+      .sort((left, right) => {
+        const leftPriority = /^f_/i.test(left) ? 0 : 1;
+        const rightPriority = /^f_/i.test(right) ? 0 : 1;
+        if (leftPriority !== rightPriority) {
+          return leftPriority - rightPriority;
+        }
+        return right.localeCompare(left);
+      });
+
+    const titleCandidates = this.buildPreviewTitleCandidates(preview.title);
+    for (const fileName of files) {
+      const filePath = path.join(this.tidalCacheDataDir, fileName);
+      let content = "";
+
+      try {
+        content = await fs.promises.readFile(filePath, "latin1");
+      } catch (error) {
+        continue;
+      }
+
+      for (const titleCandidate of titleCandidates) {
+        const matcher = new RegExp(escapeRegExp(titleCandidate), "gi");
+        let match = matcher.exec(content);
+
+        while (match) {
+          const start = Math.max(0, match.index - 256);
+          const end = Math.min(content.length, match.index + TIDAL_PREVIEW_LOOKUP_WINDOW_CHARS);
+          const windowText = content.slice(start, end);
+          const metadata = this.extractMetadataFromCacheWindow(windowText, preview);
+          if (metadata?.coverId) {
+            return metadata;
+          }
+
+          match = matcher.exec(content);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  async getPreviewMetadata(preview) {
+    const key = this.buildPreviewMetadataKey(preview);
+    if (!key) {
+      return null;
+    }
+
+    if (this.previewMetadataCache.has(key)) {
+      return this.previewMetadataCache.get(key);
+    }
+
+    if (this.previewMetadataLookups.has(key)) {
+      return this.previewMetadataLookups.get(key);
+    }
+
+    const lookup = this.scanTidalCacheForPreview(preview)
+      .then((metadata) => {
+        this.previewMetadataCache.set(key, metadata || null);
+        return metadata || null;
+      })
+      .finally(() => {
+        this.previewMetadataLookups.delete(key);
+      });
+
+    this.previewMetadataLookups.set(key, lookup);
+    return lookup;
+  }
+
+  async ensurePreviewArtwork(coverId) {
+    const normalizedCoverId = String(coverId || "").trim().toLowerCase();
+    if (!normalizedCoverId) {
+      return null;
+    }
+
+    const artworkPath = path.join(this.tidalPreviewArtworkDir, `${normalizedCoverId}.jpg`);
+    if (!fs.existsSync(artworkPath)) {
+      const artworkUrl = buildTidalCoverUrl(normalizedCoverId, 640);
+      if (!artworkUrl) {
+        return null;
+      }
+
+      try {
+        await downloadToFile(artworkUrl, artworkPath);
+      } catch (error) {
+        this.logger.warn("preview-artwork-download-failed", {
+          coverId: normalizedCoverId,
+          error: error.message,
+        });
+        return null;
+      }
+    }
+
+    return {
+      artworkPath,
+      artworkHash: normalizedCoverId.replace(/-/g, "").slice(0, 12),
+      artworkContentType: "image/jpeg",
+    };
+  }
+
+  async enrichPreviewArtwork(preview) {
+    if (!preview?.title) {
+      return preview || null;
+    }
+
+    const metadata = await this.getPreviewMetadata(preview);
+    if (!metadata?.coverId) {
+      return preview;
+    }
+
+    const resolvedArtwork = await this.ensurePreviewArtwork(metadata.coverId);
+    const enriched = {
+      ...preview,
+      album: preview.album || metadata.album || "",
+      artworkPath: resolvedArtwork?.artworkPath || preview.artworkPath || "",
+      artworkHash: resolvedArtwork?.artworkHash || preview.artworkHash || "",
+      artworkContentType: resolvedArtwork?.artworkContentType || preview.artworkContentType || "",
+      artworkCandidates: resolvedArtwork?.artworkPath
+        ? [{
+          artworkPath: resolvedArtwork.artworkPath,
+          artworkHash: resolvedArtwork.artworkHash,
+          artworkContentType: resolvedArtwork.artworkContentType,
+          source: "tidal-cache",
+        }]
+        : (Array.isArray(preview.artworkCandidates) ? preview.artworkCandidates : []),
+    };
+
+    if (enriched.trackId && enriched.artworkPath) {
+      this.trackCatalog.set(enriched.trackId, {
+        trackId: enriched.trackId,
+        title: enriched.title || "",
+        artist: enriched.artist || "",
+        album: enriched.album || "",
+        artworkPath: enriched.artworkPath,
+        artworkHash: enriched.artworkHash,
+        artworkContentType: enriched.artworkContentType,
+        artworkCandidates: Array.isArray(enriched.artworkCandidates) ? enriched.artworkCandidates.slice() : [],
+      });
+    }
+
+    return enriched;
   }
 
   updateQueuePreviewCache(cacheKey, previews, reason = "queue-preview-refresh") {
@@ -395,18 +680,22 @@ class MediaSession extends EventEmitter {
       return;
     }
 
-    const artworkState = previews.current
-      ? this.createArtworkState(
-        previews.current,
-        ...(Array.isArray(this.state.artworkCandidates) ? this.state.artworkCandidates : []),
-        this.state,
-      )
-      : {
-        artworkPath: this.state.artworkPath,
-        artworkHash: this.state.artworkHash,
-        artworkContentType: this.state.artworkContentType,
-        artworkCandidates: Array.isArray(this.state.artworkCandidates) ? this.state.artworkCandidates.slice() : [],
-      };
+    const existingArtworkState = {
+      artworkPath: this.state.artworkPath,
+      artworkHash: this.state.artworkHash,
+      artworkContentType: this.state.artworkContentType,
+      artworkCandidates: Array.isArray(this.state.artworkCandidates) ? this.state.artworkCandidates.slice() : [],
+    };
+    const hasExistingArtwork = Boolean(
+      existingArtworkState.artworkPath
+      || existingArtworkState.artworkHash
+      || existingArtworkState.artworkCandidates.length,
+    );
+    const artworkState = hasExistingArtwork
+      ? existingArtworkState
+      : (previews.current
+        ? this.createArtworkState(previews.current)
+        : existingArtworkState);
 
     this.applyState({
       ...this.state,
@@ -445,10 +734,14 @@ class MediaSession extends EventEmitter {
         return;
       }
 
+      const currentPreview = this.buildSidebarPreview(current, appId, "sidebar-current");
+      const previousPreview = await this.enrichPreviewArtwork(this.buildSidebarPreview(previous, appId, "history"));
+      const nextPreview = await this.enrichPreviewArtwork(this.buildSidebarPreview(next, appId, "queue"));
+
       this.updateQueuePreviewCache(cacheKey, {
-        current: this.buildSidebarPreview(current, appId, "sidebar-current"),
-        previous: this.buildSidebarPreview(previous, appId, "history"),
-        next: this.buildSidebarPreview(next, appId, "queue"),
+        current: currentPreview,
+        previous: previousPreview,
+        next: nextPreview,
       });
     } catch (error) {
       this.logger.warn("queue-preview-read-failed", { error: error.message });

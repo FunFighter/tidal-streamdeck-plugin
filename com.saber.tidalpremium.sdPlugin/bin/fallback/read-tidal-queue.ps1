@@ -233,6 +233,58 @@ function Save-RowArtwork {
     }
 }
 
+function Get-RowArtworkRegion {
+    param(
+        [double]$RowLeft,
+        [double]$RowTop,
+        [double]$RowHeight,
+        [double]$TextLeft
+    )
+
+    $artLeft = $RowLeft + 4
+    $availableWidth = [Math]::Max(0, $TextLeft - $artLeft - 8)
+    $maxHeightSize = [Math]::Max(0, $RowHeight - 8)
+    $artSize = [Math]::Min(56, [Math]::Min($availableWidth, $maxHeightSize))
+
+    if ($artSize -lt 24) {
+        return $null
+    }
+
+    $artTop = $RowTop + [Math]::Max(0, (($RowHeight - $artSize) / 2))
+    return @{
+        Left = $artLeft
+        Top = $artTop
+        Width = $artSize
+        Height = $artSize
+    }
+}
+
+function Save-PreviewArtwork {
+    param(
+        [double]$RowLeft,
+        [double]$RowTop,
+        [double]$RowHeight,
+        [double]$TextLeft,
+        [string]$ArtworkHash
+    )
+
+    $region = Get-RowArtworkRegion -RowLeft $RowLeft -RowTop $RowTop -RowHeight $RowHeight -TextLeft $TextLeft
+    if (-not $region) {
+        return @{
+            artworkPath = $null
+            artworkHash = $null
+            artworkContentType = $null
+        }
+    }
+
+    return Save-RowArtwork `
+        -Left $region.Left `
+        -Top $region.Top `
+        -Width $region.Width `
+        -Height $region.Height `
+        -ArtworkHash $ArtworkHash
+}
+
 function Get-RowPreview {
     param(
         [Parameter(Mandatory = $true)]
@@ -298,29 +350,8 @@ function Get-RowPreview {
         Sort-Object Top, Left, Index |
         Select-Object -First 1
 
-    $artNode = $Nodes |
-        Where-Object {
-            $_.Index -gt $StartIndex -and
-            $_.Index -lt $titleNode.Index -and
-            -not $_.IsOffscreen -and
-            $_.Width -ge 32 -and $_.Width -le 80 -and
-            $_.Height -ge 32 -and $_.Height -le 80 -and
-            $_.Top -ge ($row.Top - 4) -and
-            $_.Top -le ($rowBottom - 12)
-        } |
-        Sort-Object Top, Left, Index |
-        Select-Object -First 1
-
     $artworkHash = New-ArtworkHash -Title $titleNode.Name -Artist $(if ($artistNode) { $artistNode.Name } else { "" }) -Album ""
-    $artwork = if ($artNode) {
-        Save-RowArtwork -Left $artNode.Left -Top $artNode.Top -Width $artNode.Width -Height $artNode.Height -ArtworkHash $artworkHash
-    } else {
-        @{
-            artworkPath = $null
-            artworkHash = $null
-            artworkContentType = $null
-        }
-    }
+    $artwork = Save-PreviewArtwork -RowLeft $row.Left -RowTop $row.Top -RowHeight $row.Height -TextLeft $titleNode.Left -ArtworkHash $artworkHash
 
     return [pscustomobject]@{
         title              = $titleNode.Name
@@ -375,7 +406,16 @@ function Get-VisibleQueueRows {
                 $_.Name
             }
 
-        $title = Get-FirstText -Nodes $rowNodes -MinLeft 520 -MaxLeft 805
+        $titleNode = $rowNodes |
+            Where-Object {
+                $_.Name -and
+                $_.Left -ge 520 -and
+                $_.Left -lt 805 -and
+                -not (Is-NoiseText $_.Name)
+            } |
+            Sort-Object Left, Index |
+            Select-Object -First 1
+        $title = if ($titleNode) { ([string]$titleNode.Name).Trim() } else { "" }
         $artist = Get-FirstText -Nodes $rowNodes -MinLeft 805 -MaxLeft 1029
         $album = Get-FirstText -Nodes $rowNodes -MinLeft 1029 -MaxLeft 1195
 
@@ -383,13 +423,20 @@ function Get-VisibleQueueRows {
             continue
         }
 
+        $rowLeftMeasure = $rowNodes | Measure-Object -Property Left -Minimum
+        $rowHeightMeasure = $rowNodes | Measure-Object -Property Height -Maximum
+        $rowLeft = [double]$rowLeftMeasure.Minimum
+        $rowHeight = [double]$rowHeightMeasure.Maximum
+        $artworkHash = New-ArtworkHash -Title $title -Artist $artist -Album $album
+        $artwork = Save-PreviewArtwork -RowLeft $rowLeft -RowTop $rowTop -RowHeight $rowHeight -TextLeft $titleNode.Left -ArtworkHash $artworkHash
+
         $rows.Add([pscustomobject]@{
                 title              = $title
                 artist             = $artist
                 album              = $album
-                artworkPath        = $null
-                artworkHash        = $null
-                artworkContentType = $null
+                artworkPath        = $artwork.artworkPath
+                artworkHash        = $artwork.artworkHash
+                artworkContentType = $artwork.artworkContentType
             })
     }
 

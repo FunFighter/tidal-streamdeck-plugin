@@ -253,6 +253,26 @@ class Renderer {
     ctx.drawImage(image, drawX, drawY, drawWidth, drawHeight);
   }
 
+  drawArtworkContain(ctx, image, x, y, width, height) {
+    if (!image) {
+      return;
+    }
+
+    ctx.imageSmoothingEnabled = true;
+    if ("imageSmoothingQuality" in ctx) {
+      ctx.imageSmoothingQuality = "high";
+    }
+
+    const sourceWidth = image.width || width;
+    const sourceHeight = image.height || height;
+    const scale = Math.min(width / sourceWidth, height / sourceHeight);
+    const drawWidth = sourceWidth * scale;
+    const drawHeight = sourceHeight * scale;
+    const drawX = x + ((width - drawWidth) / 2);
+    const drawY = y + ((height - drawHeight) / 2);
+    ctx.drawImage(image, drawX, drawY, drawWidth, drawHeight);
+  }
+
   drawNowPlayingTimeRow(ctx, snapshot, bounds) {
     if (!snapshot.hasMedia || !snapshot.durationMs) {
       return;
@@ -342,8 +362,8 @@ class Renderer {
     ctx.fillStyle = footer;
     ctx.fillRect(0, 58, 200, 42);
 
-    fillRoundRect(ctx, 152, 10, 34, 24, 10, "rgba(0,0,0,0.42)");
-    this.drawTransportIcon(ctx, snapshot.isPlaying ? "pause" : "play", 169, 22, 15, "#ffffff");
+    fillRoundRect(ctx, 154, 10, 32, 24, 10, "rgba(0,0,0,0.42)");
+    this.drawTransportIcon(ctx, snapshot.isPlaying ? "pause" : "play", 170, 22, 15, "#ffffff");
 
     this.drawNowPlayingTimeRow(ctx, snapshot, {
       x: 12,
