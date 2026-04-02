@@ -161,6 +161,21 @@ function Get-SectionAnchor {
         Select-Object -First 1
 }
 
+function Get-PlayQueueButton {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Nodes
+    )
+
+    return $Nodes |
+        Where-Object {
+            -not $_.IsOffscreen -and
+            $_.Name -eq "Play queue" -and
+            $_.Type -eq "ControlType.Button"
+        } |
+        Select-Object -First 1
+}
+
 function New-ArtworkHash {
     param(
         [string]$Title,
@@ -360,9 +375,9 @@ function Get-VisibleQueueRows {
                 $_.Name
             }
 
-        $title = Get-FirstText -Nodes $rowNodes -MinLeft 500 -MaxLeft 840
-        $artist = Get-FirstText -Nodes $rowNodes -MinLeft 840 -MaxLeft 1118
-        $album = Get-FirstText -Nodes $rowNodes -MinLeft 1118 -MaxLeft 1338
+        $title = Get-FirstText -Nodes $rowNodes -MinLeft 520 -MaxLeft 805
+        $artist = Get-FirstText -Nodes $rowNodes -MinLeft 805 -MaxLeft 1029
+        $album = Get-FirstText -Nodes $rowNodes -MinLeft 1029 -MaxLeft 1195
 
         if (-not (Has-Text $title)) {
             continue
@@ -436,23 +451,55 @@ try {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
     $nodes = Get-VisibleNodes -Root $root
 
-    $history = Get-SectionAnchor -Nodes $nodes -Name "History"
-    $playingFrom = Get-SectionAnchor -Nodes $nodes -Name "Playing from:"
-    $nextUp = Get-SectionAnchor -Nodes $nodes -Name "Next Up from:"
-    $previous = if ($history) { Get-RowPreview -Nodes $nodes -StartIndex $history.Index } else { $null }
-    $current = if ($playingFrom) { Get-RowPreview -Nodes $nodes -StartIndex $playingFrom.Index } else { $null }
-    $next = if ($nextUp) { Get-RowPreview -Nodes $nodes -StartIndex $nextUp.Index } else { $null }
-    $visible = [bool]($history -or $playingFrom -or $nextUp)
+    $history = $null
+    $playingFrom = $null
+    $nextUp = $null
+    $previous = $null
+    $current = $null
+    $next = $null
+    $visible = $false
 
-    if (-not $visible) {
-        $rows = @(Get-VisibleQueueRows -Nodes $nodes)
-        $matchIndex = Find-QueueRowIndex -Rows $rows -Title $CurrentTitle -Artist $CurrentArtist -Album $CurrentAlbum
+    for ($attempt = 0; $attempt -lt 2; $attempt += 1) {
+        $history = Get-SectionAnchor -Nodes $nodes -Name "History"
+        $playingFrom = Get-SectionAnchor -Nodes $nodes -Name "Playing from:"
+        $nextUp = Get-SectionAnchor -Nodes $nodes -Name "Next Up from:"
+        $previous = if ($history) { Get-RowPreview -Nodes $nodes -StartIndex $history.Index } else { $null }
+        $current = if ($playingFrom) { Get-RowPreview -Nodes $nodes -StartIndex $playingFrom.Index } else { $null }
+        $next = if ($nextUp) { Get-RowPreview -Nodes $nodes -StartIndex $nextUp.Index } else { $null }
+        $visible = [bool]($history -or $playingFrom -or $nextUp)
 
-        if ($matchIndex -ge 0) {
-            $visible = $true
-            $current = $rows[$matchIndex]
-            $previous = if ($matchIndex -gt 0) { $rows[$matchIndex - 1] } else { $null }
-            $next = if (($matchIndex + 1) -lt $rows.Count) { $rows[$matchIndex + 1] } else { $null }
+        if (-not $visible) {
+            $rows = @(Get-VisibleQueueRows -Nodes $nodes)
+            $matchIndex = Find-QueueRowIndex -Rows $rows -Title $CurrentTitle -Artist $CurrentArtist -Album $CurrentAlbum
+
+            if ($matchIndex -ge 0) {
+                $visible = $true
+                $current = $rows[$matchIndex]
+                $previous = if ($matchIndex -gt 0) { $rows[$matchIndex - 1] } else { $null }
+                $next = if (($matchIndex + 1) -lt $rows.Count) { $rows[$matchIndex + 1] } else { $null }
+            }
+        }
+
+        if ($visible -or $attempt -gt 0 -or -not (Has-Text $CurrentTitle)) {
+            break
+        }
+
+        $queueButton = Get-PlayQueueButton -Nodes $nodes
+        if (-not $queueButton) {
+            break
+        }
+
+        try {
+            $toggle = $queueButton.Element.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+            if ($toggle.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::Off) {
+                $toggle.Toggle()
+                Start-Sleep -Milliseconds 450
+                $nodes = Get-VisibleNodes -Root $root
+            } else {
+                break
+            }
+        } catch {
+            break
         }
     }
 

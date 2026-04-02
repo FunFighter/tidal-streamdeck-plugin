@@ -26,28 +26,6 @@
       "alignment": "left",
       "text-overflow": "fade",
       "color": "#d9e1eb"
-    },
-    {
-      "key": "progress",
-      "type": "bar",
-      "rect": [12, 76, 176, 10],
-      "zOrder": 1,
-      "value": 0,
-      "range": { "min": 0, "max": 100 },
-      "subtype": 4,
-      "border_w": 0,
-      "bar_bg_c": "#4d5b73",
-      "bar_fill_c": "#0b6cf4"
-    },
-    {
-      "key": "time",
-      "type": "text",
-      "rect": [88, 88, 100, 12],
-      "zOrder": 1,
-      "font": { "size": 10, "weight": 700 },
-      "alignment": "right",
-      "text-overflow": "clip",
-      "color": "#eef4fb"
     }
   ]
 }

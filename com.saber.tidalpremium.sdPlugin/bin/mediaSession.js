@@ -818,9 +818,9 @@ class MediaSession extends EventEmitter {
       next: null,
     };
     const artworkState = this.createArtworkState(
-      sidebarPreviews.current,
       gsmtcArtwork && { ...gsmtcArtwork, source: "gsmtc" },
       nativeArtwork,
+      sidebarPreviews.current,
     );
 
     return {

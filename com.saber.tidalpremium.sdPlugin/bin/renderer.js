@@ -253,41 +253,30 @@ class Renderer {
     ctx.drawImage(image, drawX, drawY, drawWidth, drawHeight);
   }
 
-  renderNowPlayingTouchBackground(snapshot, artwork) {
-    const canvas = createCanvas(200, 100);
-    const ctx = canvas.getContext("2d");
-    this.drawArtwork(ctx, artwork?.image, 200, 100);
-
-    const overlay = ctx.createLinearGradient(0, 0, 200, 100);
-    overlay.addColorStop(0, "rgba(5,10,18,0.18)");
-    overlay.addColorStop(0.65, "rgba(5,10,18,0.46)");
-    overlay.addColorStop(1, "rgba(5,10,18,0.82)");
-    ctx.fillStyle = overlay;
-    ctx.fillRect(0, 0, 200, 100);
-    fillRoundRect(ctx, 150, 10, 36, 24, 10, "rgba(0,0,0,0.42)");
-    this.drawTransportIcon(ctx, snapshot.isPlaying ? "pause" : "play", 168, 22, 16, "#ffffff");
-    return canvasToDataUrl(canvas);
-  }
-
-  drawNowPlayingTime(ctx, snapshot, bounds) {
+  drawNowPlayingTimeRow(ctx, snapshot, bounds) {
     if (!snapshot.hasMedia || !snapshot.durationMs) {
       return;
     }
 
-    const label = `${formatDurationMs(snapshot.positionMs)} / ${formatDurationMs(snapshot.durationMs)}`;
+    const currentLabel = formatDurationMs(snapshot.positionMs);
+    const totalLabel = formatDurationMs(snapshot.durationMs);
     ctx.save();
-    ctx.font = "700 10px Segoe UI";
-    const metrics = ctx.measureText(label);
-    const width = Math.ceil(metrics.width) + 12;
-    const x = bounds.align === "right"
-      ? bounds.x + bounds.width - width
-      : bounds.x + ((bounds.width - width) / 2);
-    const y = bounds.y;
-    fillRoundRect(ctx, x, y, width, bounds.height, Math.min(8, bounds.height / 2), "rgba(0,0,0,0.54)");
-    ctx.fillStyle = "#f2f7ff";
-    ctx.textAlign = "center";
+    fillRoundRect(
+      ctx,
+      bounds.x,
+      bounds.y - Math.floor(bounds.height / 2),
+      bounds.width,
+      bounds.height,
+      Math.min(8, bounds.height / 2),
+      "rgba(0,0,0,0.46)",
+    );
+    ctx.font = `${bounds.fontWeight || 700} ${bounds.fontSize || 10}px Segoe UI`;
+    ctx.fillStyle = bounds.color || "#f2f7ff";
     ctx.textBaseline = "middle";
-    ctx.fillText(label, x + (width / 2), y + (bounds.height / 2) + 0.5);
+    ctx.textAlign = "left";
+    ctx.fillText(currentLabel, bounds.x + 8, bounds.y + 0.5);
+    ctx.textAlign = "right";
+    ctx.fillText(totalLabel, bounds.x + bounds.width - 8, bounds.y + 0.5);
     ctx.restore();
   }
 
@@ -297,27 +286,80 @@ class Renderer {
     const width = bounds.width;
     const height = bounds.height;
     const progress = snapshot.hasMedia && snapshot.durationMs > 0 ? clamp(snapshot.progress, 0, 1) : 0;
-    const fillWidth = Math.max(progress > 0 ? 8 : 0, Math.round(width * progress));
+    const radius = Math.min(6, height / 2);
+    const centerY = y + (height / 2);
+    const trackStart = x + radius;
+    const trackEnd = x + width - radius;
+    const playedEnd = trackStart + ((trackEnd - trackStart) * progress);
 
-    fillRoundRect(ctx, x, y, width, height, Math.min(6, height / 2), "rgba(255,255,255,0.20)");
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineWidth = height;
+    ctx.strokeStyle = "rgba(255,255,255,0.24)";
+    ctx.beginPath();
+    ctx.moveTo(trackStart, centerY);
+    ctx.lineTo(trackEnd, centerY);
+    ctx.stroke();
 
-    if (fillWidth > 0) {
-      const fill = ctx.createLinearGradient(x, y, x + width, y);
+    if (progress > 0) {
+      const fill = ctx.createLinearGradient(trackStart, centerY, trackEnd, centerY);
       fill.addColorStop(0, "#7fd8ff");
       fill.addColorStop(0.55, "#22b2ff");
       fill.addColorStop(1, "#0b6cf4");
-      fillRoundRect(ctx, x, y, fillWidth, height, Math.min(6, height / 2), fill);
+      ctx.strokeStyle = fill;
+      ctx.beginPath();
+      ctx.moveTo(trackStart, centerY);
+      ctx.lineTo(Math.max(trackStart, playedEnd), centerY);
+      ctx.stroke();
 
-      const knobX = x + Math.min(width, Math.max(0, fillWidth));
       ctx.save();
       ctx.shadowColor = "rgba(11,108,244,0.55)";
       ctx.shadowBlur = 6;
       ctx.fillStyle = "#ffffff";
       ctx.beginPath();
-      ctx.arc(knobX, y + (height / 2), 4, 0, Math.PI * 2);
+      ctx.arc(playedEnd, centerY, Math.max(3.25, height * 0.52), 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
+    ctx.restore();
+  }
+
+  renderNowPlayingTouchBackground(snapshot, artwork) {
+    const canvas = createCanvas(200, 100);
+    const ctx = canvas.getContext("2d");
+    this.drawArtwork(ctx, artwork?.image, 200, 100);
+
+    const overlay = ctx.createLinearGradient(0, 0, 200, 100);
+    overlay.addColorStop(0, "rgba(5,10,18,0.14)");
+    overlay.addColorStop(0.58, "rgba(5,10,18,0.36)");
+    overlay.addColorStop(1, "rgba(5,10,18,0.86)");
+    ctx.fillStyle = overlay;
+    ctx.fillRect(0, 0, 200, 100);
+
+    const footer = ctx.createLinearGradient(0, 58, 0, 100);
+    footer.addColorStop(0, "rgba(0,0,0,0)");
+    footer.addColorStop(1, "rgba(0,0,0,0.55)");
+    ctx.fillStyle = footer;
+    ctx.fillRect(0, 58, 200, 42);
+
+    fillRoundRect(ctx, 152, 10, 34, 24, 10, "rgba(0,0,0,0.42)");
+    this.drawTransportIcon(ctx, snapshot.isPlaying ? "pause" : "play", 169, 22, 15, "#ffffff");
+
+    this.drawNowPlayingTimeRow(ctx, snapshot, {
+      x: 12,
+      y: 78,
+      width: 176,
+      height: 14,
+      fontSize: 10,
+    });
+    this.drawNowPlayingProgressBar(ctx, snapshot, {
+      x: 14,
+      y: 89,
+      width: 172,
+      height: 6,
+    });
+
+    return canvasToDataUrl(canvas);
   }
 
   renderTransportTouchBackground(snapshot, kind, label, preview, previewArtwork) {
@@ -447,40 +489,40 @@ class Renderer {
     ctx.fillStyle = snapshot.active ? "rgba(7, 12, 20, 0.20)" : "rgba(7, 12, 20, 0.62)";
     ctx.fillRect(0, 0, RENDER.KEY_SIZE, RENDER.KEY_SIZE);
 
-    const textGradient = ctx.createLinearGradient(0, 70, 0, 144);
+    const textGradient = ctx.createLinearGradient(0, 58, 0, 144);
     textGradient.addColorStop(0, "rgba(0,0,0,0)");
     textGradient.addColorStop(0.35, "rgba(0,0,0,0.40)");
     textGradient.addColorStop(1, "rgba(0,0,0,0.86)");
     ctx.fillStyle = textGradient;
-    ctx.fillRect(0, 60, 144, 84);
+    ctx.fillRect(0, 58, 144, 86);
 
     const title = snapshot.hasMedia ? snapshot.title || "Unknown Track" : "TIDAL";
     const artist = snapshot.hasMedia ? snapshot.artist || "Unknown Artist" : "No media";
 
     ctx.fillStyle = "#ffffff";
     ctx.font = "700 18px Segoe UI";
-    const titleState = this.drawMarquee(ctx, `${context.context}:title`, title, 12, 102, 118, now, "700 18px Segoe UI", "#ffffff");
+    const titleState = this.drawMarquee(ctx, `${context.context}:title`, title, 12, 96, 118, now, "700 18px Segoe UI", "#ffffff");
 
     ctx.font = "600 14px Segoe UI";
-    const artistState = this.drawMarquee(ctx, `${context.context}:artist`, artist, 12, 122, 118, now, "600 14px Segoe UI", "rgba(225,233,241,0.92)");
+    const artistState = this.drawMarquee(ctx, `${context.context}:artist`, artist, 12, 114, 118, now, "600 14px Segoe UI", "rgba(225,233,241,0.92)");
 
     fillRoundRect(ctx, 104, 12, 28, 28, 10, "rgba(0,0,0,0.46)");
     const iconKind = snapshot.hasMedia ? (snapshot.isPlaying ? "pause" : "play") : "play";
     this.drawTransportIcon(ctx, iconKind, 118, 26, 18, "#ffffff");
 
     this.drawVolumeOverlay(ctx, overlay);
-    this.drawNowPlayingTime(ctx, snapshot, {
+    this.drawNowPlayingTimeRow(ctx, snapshot, {
       x: 12,
-      y: 114,
+      y: 124,
       width: 120,
       height: 14,
-      align: "right",
+      fontSize: 10,
     });
     this.drawNowPlayingProgressBar(ctx, snapshot, {
-      x: 12,
-      y: 132,
+      x: 14,
+      y: 135,
       width: 120,
-      height: 7,
+      height: 6,
     });
     this.drawDebug(ctx, context.context, snapshot, now);
 
