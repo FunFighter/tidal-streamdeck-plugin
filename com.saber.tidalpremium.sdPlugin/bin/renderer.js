@@ -279,14 +279,45 @@ class Renderer {
     ctx.font = "700 10px Segoe UI";
     const metrics = ctx.measureText(label);
     const width = Math.ceil(metrics.width) + 12;
-    const x = bounds.x + bounds.width - width;
+    const x = bounds.align === "right"
+      ? bounds.x + bounds.width - width
+      : bounds.x + ((bounds.width - width) / 2);
     const y = bounds.y;
-    fillRoundRect(ctx, x, y, width, bounds.height, Math.min(8, bounds.height / 2), "rgba(0,0,0,0.48)");
-    ctx.fillStyle = "#eef4fb";
+    fillRoundRect(ctx, x, y, width, bounds.height, Math.min(8, bounds.height / 2), "rgba(0,0,0,0.54)");
+    ctx.fillStyle = "#f2f7ff";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(label, x + (width / 2), y + (bounds.height / 2) + 0.5);
     ctx.restore();
+  }
+
+  drawNowPlayingProgressBar(ctx, snapshot, bounds) {
+    const x = bounds.x;
+    const y = bounds.y;
+    const width = bounds.width;
+    const height = bounds.height;
+    const progress = snapshot.hasMedia && snapshot.durationMs > 0 ? clamp(snapshot.progress, 0, 1) : 0;
+    const fillWidth = Math.max(progress > 0 ? 8 : 0, Math.round(width * progress));
+
+    fillRoundRect(ctx, x, y, width, height, Math.min(6, height / 2), "rgba(255,255,255,0.20)");
+
+    if (fillWidth > 0) {
+      const fill = ctx.createLinearGradient(x, y, x + width, y);
+      fill.addColorStop(0, "#7fd8ff");
+      fill.addColorStop(0.55, "#22b2ff");
+      fill.addColorStop(1, "#0b6cf4");
+      fillRoundRect(ctx, x, y, fillWidth, height, Math.min(6, height / 2), fill);
+
+      const knobX = x + Math.min(width, Math.max(0, fillWidth));
+      ctx.save();
+      ctx.shadowColor = "rgba(11,108,244,0.55)";
+      ctx.shadowBlur = 6;
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(knobX, y + (height / 2), 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   renderTransportTouchBackground(snapshot, kind, label, preview, previewArtwork) {
@@ -440,11 +471,17 @@ class Renderer {
     this.drawVolumeOverlay(ctx, overlay);
     this.drawNowPlayingTime(ctx, snapshot, {
       x: 12,
-      y: 112,
+      y: 114,
       width: 120,
       height: 14,
+      align: "right",
     });
-    this.drawProgressBar(ctx, snapshot.progress);
+    this.drawNowPlayingProgressBar(ctx, snapshot, {
+      x: 12,
+      y: 132,
+      width: 120,
+      height: 7,
+    });
     this.drawDebug(ctx, context.context, snapshot, now);
 
     const fingerprint = JSON.stringify({
