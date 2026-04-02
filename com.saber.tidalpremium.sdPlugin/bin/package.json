@@ -1,0 +1,15 @@
+{
+  "name": "tidalpremium-streamdeck-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "plugin.js",
+  "scripts": {
+    "check": "node --check plugin.js && node --check streamDeck.js && node --check mediaSession.js && node --check renderer.js && node --check controls.js && node --check cache.js && node --check logger.js"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.68",
+    "loudness": "^0.4.2",
+    "ws": "^8.18.0"
+  }
+}

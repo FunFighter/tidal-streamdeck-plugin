@@ -1,0 +1,118 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "UUID": "com.saber.tidalpremium",
+  "Name": "TIDAL Premium",
+  "Version": "1.0.0.0",
+  "Author": "OpenAI Codex",
+  "Description": "Premium-feeling TIDAL controls for Stream Deck on Windows with GSMTC metadata, queue-aware previews, and Stream Deck+ dial volume.",
+  "Icon": "imgs/plugin/icon",
+  "Category": "TIDAL Premium",
+  "CategoryIcon": "imgs/plugin/category",
+  "CodePath": "bin/plugin.js",
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "6.6"
+  },
+  "Nodejs": {
+    "Version": "20"
+  },
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "ApplicationsToMonitor": {
+    "windows": [
+      "TIDAL.exe"
+    ]
+  },
+  "Actions": [
+    {
+      "UUID": "com.saber.tidalpremium.nowplaying",
+      "Name": "Now Playing",
+      "Tooltip": "Dynamic TIDAL now-playing tile with album art, scrolling text, and playback progress. Press to toggle play/pause.",
+      "Icon": "imgs/actions/nowplaying/icon",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "SupportedInMultiActions": false,
+      "UserTitleEnabled": false,
+      "Encoder": {
+        "Icon": "imgs/actions/nowplaying/icon",
+        "StackColor": "#0b6cf4"
+      },
+      "States": [
+        {
+          "Image": "imgs/actions/nowplaying/icon",
+          "TitleAlignment": "middle"
+        }
+      ]
+    },
+    {
+      "UUID": "com.saber.tidalpremium.previous",
+      "Name": "Previous Track",
+      "Tooltip": "Skip to the previous TIDAL track.",
+      "Icon": "imgs/actions/previous/icon",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "Encoder": {
+        "Icon": "imgs/actions/previous/icon",
+        "StackColor": "#0b6cf4"
+      },
+      "States": [
+        {
+          "Image": "imgs/actions/previous/icon",
+          "TitleAlignment": "middle"
+        }
+      ]
+    },
+    {
+      "UUID": "com.saber.tidalpremium.next",
+      "Name": "Next Track",
+      "Tooltip": "Skip to the next TIDAL track.",
+      "Icon": "imgs/actions/next/icon",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "Encoder": {
+        "Icon": "imgs/actions/next/icon",
+        "StackColor": "#0b6cf4"
+      },
+      "States": [
+        {
+          "Image": "imgs/actions/next/icon",
+          "TitleAlignment": "middle"
+        }
+      ]
+    },
+    {
+      "UUID": "com.saber.tidalpremium.volume",
+      "Name": "Volume Dial",
+      "Tooltip": "Rotate to adjust TIDAL volume when the session is active, otherwise the system master volume. Press to mute.",
+      "Icon": "imgs/actions/volume/icon",
+      "Controllers": [
+        "Encoder"
+      ],
+      "SupportedInMultiActions": false,
+      "UserTitleEnabled": false,
+      "Encoder": {
+        "Icon": "imgs/actions/volume/icon",
+        "StackColor": "#0b6cf4"
+      },
+      "States": [
+        {
+          "Image": "imgs/actions/volume/icon"
+        }
+      ]
+    }
+  ]
+}

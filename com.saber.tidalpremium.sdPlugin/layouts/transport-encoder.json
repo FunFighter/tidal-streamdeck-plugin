@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/layout.json",
+  "id": "com.saber.tidalpremium.transport.encoder",
+  "items": [
+    {
+      "key": "bg",
+      "type": "pixmap",
+      "rect": [0, 0, 200, 100]
+    },
+    {
+      "key": "title",
+      "type": "text",
+      "rect": [12, 48, 176, 20],
+      "zOrder": 1,
+      "font": { "size": 15, "weight": 700 },
+      "alignment": "left",
+      "text-overflow": "fade",
+      "color": "#ffffff"
+    },
+    {
+      "key": "artist",
+      "type": "text",
+      "rect": [12, 70, 176, 16],
+      "zOrder": 1,
+      "font": { "size": 12, "weight": 500 },
+      "alignment": "left",
+      "text-overflow": "fade",
+      "color": "#d9e1eb"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "tidalpremium-streamdeck-repo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GitHub-ready repo for the TIDAL Premium Stream Deck plugin.",
+  "scripts": {
+    "install:plugin": "npm ci --prefix ./com.saber.tidalpremium.sdPlugin/bin",
+    "check": "npm --prefix ./com.saber.tidalpremium.sdPlugin/bin run check",
+    "validate": "streamdeck validate ./com.saber.tidalpremium.sdPlugin --no-update-check",
+    "pack": "npm run check && npm run validate && streamdeck pack ./com.saber.tidalpremium.sdPlugin --output ./dist --force --no-update-check"
+  },
+  "devDependencies": {
+    "@elgato/cli": "^1.0.0"
+  }
+}
