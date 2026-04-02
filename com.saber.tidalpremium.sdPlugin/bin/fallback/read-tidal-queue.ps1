@@ -3,6 +3,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -124,14 +126,42 @@ function Get-RowPreview {
         [int]$StartIndex
     )
 
+    $anchor = $Nodes | Where-Object { $_.Index -eq $StartIndex } | Select-Object -First 1
+    if (-not $anchor) {
+        return $null
+    }
+
+    $row = $Nodes |
+        Where-Object {
+            $_.Index -gt $StartIndex -and
+            -not $_.IsOffscreen -and
+            $_.Type -eq "ControlType.DataItem" -and
+            $_.Width -ge 160 -and
+            $_.Height -ge 32 -and
+            $_.Top -ge ($anchor.Top + 12)
+        } |
+        Select-Object -First 1
+
+    if (-not $row) {
+        return $null
+    }
+
+    $rowBottom = $row.Top + [Math]::Max($row.Height, 44) + 6
+    $rowLeft = $row.Left
+
     $titleNode = $Nodes |
         Where-Object {
             $_.Index -gt $StartIndex -and
             -not $_.IsOffscreen -and
             $_.Type -eq "ControlType.Hyperlink" -and
             $_.Name -and
-            $_.Name -ne "Mix"
+            $_.Name -ne "Mix" -and
+            $_.Name -ne "Tracks" -and
+            $_.Top -ge ($row.Top - 2) -and
+            $_.Top -le $rowBottom -and
+            $_.Left -ge ($rowLeft + 40)
         } |
+        Sort-Object Top, Left, Index |
         Select-Object -First 1
 
     if (-not $titleNode) {
@@ -145,8 +175,12 @@ function Get-RowPreview {
             $_.Type -eq "ControlType.Hyperlink" -and
             $_.Name -and
             $_.Name -ne "Mix" -and
-            $_.Top -ge $titleNode.Top
+            $_.Name -ne "Tracks" -and
+            $_.Top -gt $titleNode.Top -and
+            $_.Top -le $rowBottom -and
+            $_.Left -ge ($rowLeft + 40)
         } |
+        Sort-Object Top, Left, Index |
         Select-Object -First 1
 
     $artNode = $Nodes |
@@ -155,9 +189,11 @@ function Get-RowPreview {
             $_.Index -lt $titleNode.Index -and
             -not $_.IsOffscreen -and
             $_.Width -ge 32 -and $_.Width -le 80 -and
-            $_.Height -ge 32 -and $_.Height -le 80
+            $_.Height -ge 32 -and $_.Height -le 80 -and
+            $_.Top -ge ($row.Top - 4) -and
+            $_.Top -le ($rowBottom - 12)
         } |
-        Sort-Object Index |
+        Sort-Object Top, Left, Index |
         Select-Object -First 1
 
     $artworkHash = New-ArtworkHash -Title $titleNode.Name -Artist $(if ($artistNode) { $artistNode.Name } else { "" }) -Album ""
@@ -211,7 +247,7 @@ try {
 
     $previous = if ($history) { Get-RowPreview -Nodes $nodes -StartIndex $history.Index } else { $null }
     $current = if ($playingFrom) { Get-RowPreview -Nodes $nodes -StartIndex $playingFrom.Index } else { $null }
-    $next = Get-RowPreview -Nodes $nodes -StartIndex $nextUp.Index
+    $next = if ($nextUp) { Get-RowPreview -Nodes $nodes -StartIndex $nextUp.Index } else { $null }
 
     [Console]::Out.WriteLine((@{
                 ok      = $true

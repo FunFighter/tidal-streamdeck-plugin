@@ -3,6 +3,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 
 $script:AsTaskMethod = [System.WindowsRuntimeSystemExtensions].GetMethods() |
