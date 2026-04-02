@@ -5,7 +5,6 @@ Standalone repo for the Windows TIDAL Stream Deck plugin.
 ## What It Includes
 
 - `com.saber.tidalpremium.sdPlugin/` plugin source
-- `dist/` packaged `.streamDeckPlugin` installer
 - `HELP.md` thin install and usage notes
 
 ## Quick Start
@@ -16,7 +15,7 @@ npm run install:plugin
 npm run pack
 ```
 
-The packaged installer is written to `dist/`.
+The packaged installer is written to `dist/` locally and is intended to be uploaded as a GitHub release asset rather than committed to git.
 
 ## Install
 

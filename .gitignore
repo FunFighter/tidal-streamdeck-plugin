@@ -2,3 +2,7 @@ node_modules/
 com.saber.tidalpremium.sdPlugin/bin/node_modules/
 npm-debug.log*
 *.log
+dist/
+.env
+.env.*
+.tools/
