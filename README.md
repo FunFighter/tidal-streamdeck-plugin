@@ -1,4 +1,4 @@
-# TIDAL Premium Stream Deck Plugin
+# TIDAL Stream Deck Plugin
 
 Standalone repo for the Windows TIDAL Stream Deck plugin.
 
