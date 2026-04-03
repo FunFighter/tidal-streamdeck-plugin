@@ -15,6 +15,9 @@ const QUEUE_PREVIEW_DEBOUNCE_MS = 2500;
 const QUEUE_PREVIEW_TIMEOUT_MS = 6000;
 const TIDAL_PREVIEW_LOOKUP_TIMEOUT_MS = 9000;
 const TIDAL_PREVIEW_LOOKUP_WINDOW_CHARS = 12000;
+const PLAYBACK_TIMELINE_TIMEOUT_MS = 1800;
+const TIMELINE_MIN_VALID_MS = 250;
+const TIMELINE_REWIND_TOLERANCE_MS = 1200;
 
 function normalizeLookupText(value) {
   return String(value || "")
@@ -428,6 +431,15 @@ class MediaSession extends EventEmitter {
       return null;
     }
 
+    const artworkCandidates = item.artworkPath
+      ? [{
+        artworkPath: item.artworkPath || "",
+        artworkHash: item.artworkHash || "",
+        artworkContentType: item.artworkContentType || "",
+        source,
+      }]
+      : [];
+
     return {
       trackId: this.buildTrackId({
         appId,
@@ -438,10 +450,10 @@ class MediaSession extends EventEmitter {
       title: item.title || "",
       artist: item.artist || "",
       album: item.album || "",
-      artworkPath: "",
-      artworkHash: "",
-      artworkContentType: "",
-      artworkCandidates: [],
+      artworkPath: item.artworkPath || "",
+      artworkHash: item.artworkHash || "",
+      artworkContentType: item.artworkContentType || "",
+      artworkCandidates,
       source,
     };
   }
@@ -454,6 +466,79 @@ class MediaSession extends EventEmitter {
     }
 
     return `${title}|${artist}`;
+  }
+
+  shouldUseTimelineFallback(trackId, playbackStatus, positionMs, durationMs) {
+    if (!trackId || playbackStatus !== "playing" || durationMs <= 0) {
+      return false;
+    }
+
+    if (positionMs <= TIMELINE_MIN_VALID_MS) {
+      return true;
+    }
+
+    if (this.state.trackId !== trackId || !this.state.isPlaying || this.state.durationMs <= 0) {
+      return false;
+    }
+
+    const previousProjected = Math.min(
+      this.state.durationMs || Number.MAX_SAFE_INTEGER,
+      Math.max(0, this.state.positionMs + (Date.now() - this.state.sampledAt)),
+    );
+
+    return (positionMs + TIMELINE_REWIND_TOLERANCE_MS) < previousProjected;
+  }
+
+  async getUIPlaybackTimeline() {
+    try {
+      const payload = await this.runFallbackScript("read-tidal-playback.ps1", [], {
+        timeoutMs: PLAYBACK_TIMELINE_TIMEOUT_MS,
+      });
+
+      if (!payload?.ok || !payload.active || !payload.visible) {
+        return null;
+      }
+
+      return {
+        positionMs: roundMilliseconds(payload.positionMs),
+        durationMs: roundMilliseconds(payload.durationMs),
+      };
+    } catch (error) {
+      this.logger.warn("ui-playback-timeline-read-failed", { error: error.message });
+      return null;
+    }
+  }
+
+  async resolvePlaybackTimeline(trackId, playbackStatus, positionMs, durationMs) {
+    let resolvedPositionMs = roundMilliseconds(positionMs);
+    let resolvedDurationMs = roundMilliseconds(durationMs);
+
+    if (!this.shouldUseTimelineFallback(trackId, playbackStatus, resolvedPositionMs, resolvedDurationMs)) {
+      return {
+        positionMs: resolvedPositionMs,
+        durationMs: resolvedDurationMs,
+      };
+    }
+
+    const uiTimeline = await this.getUIPlaybackTimeline();
+    if (uiTimeline?.durationMs) {
+      return {
+        positionMs: uiTimeline.positionMs,
+        durationMs: uiTimeline.durationMs,
+      };
+    }
+
+    if (this.state.trackId === trackId && this.state.isPlaying && this.state.durationMs > 0) {
+      resolvedPositionMs = Math.min(
+        resolvedDurationMs || this.state.durationMs,
+        Math.max(0, this.state.positionMs + (Date.now() - this.state.sampledAt)),
+      );
+    }
+
+    return {
+      positionMs: resolvedPositionMs,
+      durationMs: resolvedDurationMs,
+    };
   }
 
   buildPreviewTitleCandidates(title) {
@@ -1085,8 +1170,8 @@ class MediaSession extends EventEmitter {
       this.logger.warn("native-artwork-failed", { error: error.message });
     }
 
-    const durationMs = roundMilliseconds(nowPlaying.duration || (Number(nowPlaying.durationSeconds) || 0) * 1000);
-    const positionMs = roundMilliseconds((Number(nowPlaying.positionSeconds) || 0) * 1000);
+    let durationMs = roundMilliseconds(nowPlaying.duration || (Number(nowPlaying.durationSeconds) || 0) * 1000);
+    let positionMs = roundMilliseconds((Number(nowPlaying.positionSeconds) || 0) * 1000);
     const playbackStatus = String(nowPlaying.playbackStatus || "stopped").toLowerCase();
     const active = /tidal/i.test(nowPlaying.app || "");
     const track = {
@@ -1094,6 +1179,10 @@ class MediaSession extends EventEmitter {
       artist: nowPlaying.artist || "",
       album: nowPlaying.albumTitle || "",
     };
+    const currentTrackId = this.getQueuePreviewCacheKey(track, nowPlaying.app || "");
+    const timelineState = await this.resolvePlaybackTimeline(currentTrackId, playbackStatus, positionMs, durationMs);
+    durationMs = timelineState.durationMs;
+    positionMs = timelineState.positionMs;
     const nativeArtwork = artwork?.ok
       ? {
         artworkPath: artwork.path || "",
@@ -1102,7 +1191,6 @@ class MediaSession extends EventEmitter {
         source: "native",
       }
       : null;
-    const currentTrackId = this.getQueuePreviewCacheKey(track, nowPlaying.app || "");
     const sameTrackAsPrevious = active && currentTrackId === this.state.trackId;
     const gsmtcArtwork = active && (sameTrackAsPrevious || !nativeArtwork) ? await this.getGSMTCArtwork(track) : null;
     const sidebarPreviews = active ? this.getSidebarPreviewSnapshot(track, nowPlaying.app || "") : {
@@ -1184,8 +1272,23 @@ class MediaSession extends EventEmitter {
     }
 
     const playbackStatus = String(payload.playbackStatus || "stopped").toLowerCase();
-    const durationMs = roundMilliseconds(payload.durationMs);
-    const positionMs = roundMilliseconds(payload.positionMs);
+    let durationMs = roundMilliseconds(payload.durationMs);
+    let positionMs = roundMilliseconds(payload.positionMs);
+    const currentTrackId = this.buildTrackId({
+      appId: payload.appId,
+      title: payload.title,
+      artist: payload.artist,
+      album: payload.album,
+      durationMs,
+    });
+    const timelineState = await this.resolvePlaybackTimeline(
+      currentTrackId,
+      playbackStatus,
+      positionMs,
+      durationMs,
+    );
+    durationMs = timelineState.durationMs;
+    positionMs = timelineState.positionMs;
 
     return {
       bridge: "powershell",
@@ -1195,13 +1298,7 @@ class MediaSession extends EventEmitter {
       title: payload.title || "",
       artist: payload.artist || "",
       album: payload.album || "",
-      trackId: this.buildTrackId({
-        appId: payload.appId,
-        title: payload.title,
-        artist: payload.artist,
-        album: payload.album,
-        durationMs,
-      }),
+      trackId: currentTrackId,
       durationMs,
       positionMs,
       sampledAt: Date.now(),
