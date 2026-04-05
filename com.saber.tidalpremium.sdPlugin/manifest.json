@@ -2,7 +2,7 @@
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "UUID": "com.saber.tidalpremium",
   "Name": "TIDAL Premium",
-  "Version": "1.0.1.0",
+  "Version": "1.0.2.0",
   "Author": "OpenAI Codex",
   "Description": "Premium-feeling TIDAL controls for Stream Deck on Windows with GSMTC metadata, queue-aware previews, and Stream Deck+ dial volume.",
   "Icon": "imgs/plugin/icon",

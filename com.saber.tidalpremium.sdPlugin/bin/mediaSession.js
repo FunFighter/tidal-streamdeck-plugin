@@ -623,7 +623,7 @@ class MediaSession extends EventEmitter {
         let match = matcher.exec(content);
 
         while (match) {
-          const start = Math.max(0, match.index - 256);
+          const start = Math.max(0, match.index);
           const end = Math.min(content.length, match.index + TIDAL_PREVIEW_LOOKUP_WINDOW_CHARS);
           const windowText = content.slice(start, end);
           const metadata = this.extractMetadataFromCacheWindow(windowText, preview);
